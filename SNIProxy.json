@@ -1,0 +1,15 @@
+{
+    "headBufferSize": 8192,
+    "forwarderBufferSize": 8192,
+    "idleMillis": 10000,
+    "servers": [
+        {
+            "proxyType": "http",
+            "proxyHost": "192.168.1.3",
+            "proxyPort": 10809,
+            "bindHost": "127.0.0.1",
+            "bindPort": 443,
+            "dstPort": 443
+        }
+    ]
+}
