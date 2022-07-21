@@ -87,26 +87,6 @@ public final class SNISocket implements Closeable {
         }
     }
 
-    private void close(@NotNull final IOException e) {
-        System.out.println("connections count = " + server.getConnectionNum() + " " + name + " " + link + " " + e.getClass().getName() + ": " + e.getMessage());
-        // e.printStackTrace();
-        close();
-    }
-
-    private boolean tryClose() {
-        if (stateDownload != ForwarderState.Ok && stateUpload != ForwarderState.Ok) {
-            close();
-            return true;
-        }
-        return false;
-    }
-
-    private boolean tryClose(@NotNull final IOException e) {
-        if (!(e instanceof SocketException) && !(e instanceof SocketTimeoutException))
-            e.printStackTrace();
-        return tryClose();
-    }
-
     @NotNull
     Initializer getInitializer() {
         return initializer;
@@ -199,7 +179,9 @@ public final class SNISocket implements Closeable {
                 server.runForwarder(downloader);
                 uploader.run();
             } catch (IOException e) {
-                close(e);
+                if (!(e instanceof SocketException) && !(e instanceof SocketTimeoutException))
+                    e.printStackTrace();
+                close();
             }
         }
     }
@@ -210,32 +192,45 @@ public final class SNISocket implements Closeable {
         @Nullable
         @SuppressWarnings("Duplicates")
         public void run() {
+            if (state != State.Normal || stateUpload == ForwarderState.Error)
+                return;
             while (true) {
                 try {
                     final int len = inputStream.read(buffer);
                     if (len < 0) {
-                        stateUpload = ForwarderState.Error;
-                        tryClose();
-                        return;
+                        socket.sendUrgentData(0);
                     } else {
+                        if (stateUpload == ForwarderState.Idle)
+                            System.out.println("connections count = " + server.getConnectionNum() + " " + name + " " + link + " ↑ continue");
                         stateUpload = ForwarderState.Ok;
                         upOutputStream.write(buffer, 0, len);
                         upOutputStream.flush();
                     }
                 } catch (SocketTimeoutException e) {
-                    System.out.println("connections count = " + server.getConnectionNum() + " " + name + " " + link + " ↑ idle");
+                    try {
+                        socket.sendUrgentData(0);
+                    } catch (IOException ex) {
+                        error(ex);
+                        return;
+                    }
+                    if (stateUpload == ForwarderState.Ok)
+                        System.out.println("connections count = " + server.getConnectionNum() + " " + name + " " + link + " ↑ idle");
                     stateUpload = ForwarderState.Idle;
-                    if (tryClose(e))
-                        return;
                 } catch (IOException e) {
-                    if (socket.isClosed())
-                        return;
-                    System.out.println("connections count = " + server.getConnectionNum() + " " + name + " " + link + " ↑ " + e.getClass().getName() + ": " + e.getMessage());
-                    stateUpload = ForwarderState.Error;
-                    tryClose(e);
+                    error(e);
                     return;
                 }
             }
+        }
+
+        private void error(IOException e) {
+            stateUpload = ForwarderState.Error;
+            if (socket.isClosed())
+                return;
+            System.out.println("connections count = " + server.getConnectionNum() + " " + name + " " + link + " ↑ " + e.getClass().getName() + ": " + e.getMessage());
+            if (!(e instanceof SocketException) && !(e instanceof SocketTimeoutException))
+                e.printStackTrace();
+            close();
         }
     }
 
@@ -246,32 +241,45 @@ public final class SNISocket implements Closeable {
         @Nullable
         @SuppressWarnings("Duplicates")
         public void run() {
+            if (state != State.Normal || stateDownload == ForwarderState.Error)
+                return;
             while (true) {
                 try {
                     final int len = upInputStream.read(buffer);
                     if (len < 0) {
-                        stateDownload = ForwarderState.Error;
-                        tryClose();
-                        return;
+                        upSocket.sendUrgentData(0);
                     } else {
+                        if (stateDownload == ForwarderState.Idle)
+                            System.out.println("connections count = " + server.getConnectionNum() + " " + name + " " + link + " ↓ continue");
                         stateDownload = ForwarderState.Ok;
                         outputStream.write(buffer, 0, len);
                         outputStream.flush();
                     }
                 } catch (SocketTimeoutException e) {
-                    System.out.println("connections count = " + server.getConnectionNum() + " " + name + " " + link + " ↓ idle");
+                    try {
+                        upSocket.sendUrgentData(0);
+                    } catch (IOException ex) {
+                        error(ex);
+                        return;
+                    }
+                    if (stateDownload == ForwarderState.Ok)
+                        System.out.println("connections count = " + server.getConnectionNum() + " " + name + " " + link + " ↓ idle");
                     stateDownload = ForwarderState.Idle;
-                    if (tryClose(e))
-                        return;
                 } catch (IOException e) {
-                    if (socket.isClosed())
-                        return;
-                    System.out.println("connections count = " + server.getConnectionNum() + " " + name + " " + link + " ↓ " + e.getClass().getName() + ": " + e.getMessage());
-                    stateDownload = ForwarderState.Error;
-                    tryClose(e);
+                    error(e);
                     return;
                 }
             }
+        }
+
+        private void error(IOException e) {
+            stateDownload = ForwarderState.Error;
+            if (socket.isClosed())
+                return;
+            System.out.println("connections count = " + server.getConnectionNum() + " " + name + " " + link + " ↓ " + e.getClass().getName() + ": " + e.getMessage());
+            if (!(e instanceof SocketException) && !(e instanceof SocketTimeoutException))
+                e.printStackTrace();
+            close();
         }
     }
 }
