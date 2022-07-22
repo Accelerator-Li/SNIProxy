@@ -34,10 +34,6 @@ Java 8
     // buffer size for forwarding
     "forwarderBufferSize": 8192,
     
-    // 空闲毫秒，当连接的上下行都空闲了x毫秒就会被关闭
-    // idle milliseconds, the connection will be closed when its upstream and downstream are both idle for x milliseconds
-    "idleMillis": 10000,
-    
     // 多个SNI代理
     // Multi SNI Proxies
     "servers": [

@@ -32,14 +32,9 @@ public final class Main {
             if (forwarderBufferSize <= 0 || forwarderBufferSize > 1024 * 1024 * 1024) {
                 throw new RuntimeException("forwarderBufferSize " + forwarderBufferSize + " out of range: (0, " + 1024 * 1024 * 1024 + "]");
             }
-            final int idleMillis = config.getIdleMillis();
-            if (idleMillis <= 0 || idleMillis > 24 * 3600 * 1000) {
-                throw new RuntimeException("idleMillis " + idleMillis + " out of range: (0, " + 24 * 3600 * 1000 + "]");
-            }
             System.out.println("========================================");
             System.out.println("headBufferSize      = " + headBufferSize);
             System.out.println("forwarderBufferSize = " + forwarderBufferSize);
-            System.out.println("idleMillis          = " + idleMillis);
             System.out.println("========================================");
             final ArrayList<ServerConfig> serverConfigs = config.getServers();
             if (serverConfigs == null || serverConfigs.size() == 0) {

@@ -72,6 +72,7 @@ public final class SNISocket implements Closeable {
         }
     }
 
+    private static final int soTimeout = 5000;
     private final SNIServerSocket server;
     private final Config config;
     private final String id;
@@ -101,7 +102,7 @@ public final class SNISocket implements Closeable {
         this.localSocket = localSocket;
         this.localInputStream = localSocket.getInputStream();
         this.localOutputStream = localSocket.getOutputStream();
-        localSocket.setSoTimeout(config.getIdleMillis());
+        localSocket.setSoTimeout(soTimeout);
         localSocket.setKeepAlive(false);
         localSocket.setTcpNoDelay(true);
         localSocket.setSoLinger(true, 0);
@@ -260,7 +261,7 @@ public final class SNISocket implements Closeable {
                     }
                     linkName += " -> " + sniName + ":" + dstPort;
                     upperSocket = new Socket(proxy);
-                    upperSocket.setSoTimeout(config.getIdleMillis());
+                    upperSocket.setSoTimeout(soTimeout);
                     upperSocket.setKeepAlive(false);
                     upperSocket.setTcpNoDelay(true);
                     upperSocket.setSoLinger(true, 0);
@@ -319,7 +320,6 @@ public final class SNISocket implements Closeable {
             }
         }
     }
-
 
     public class Downloader implements Forwarder {
         private final byte[] buffer = new byte[config.getForwarderBufferSize()];

@@ -6,7 +6,6 @@ public final class Config {
 
     private int headBufferSize = 8 * 1024;
     private int forwarderBufferSize = 8 * 1024;
-    private int idleMillis = 10 * 1000;
     private ArrayList<ServerConfig> servers;
 
     public int getHeadBufferSize() {
@@ -23,14 +22,6 @@ public final class Config {
 
     public void setForwarderBufferSize(int forwarderBufferSize) {
         this.forwarderBufferSize = forwarderBufferSize;
-    }
-
-    public int getIdleMillis() {
-        return idleMillis;
-    }
-
-    public void setIdleMillis(int idleMillis) {
-        this.idleMillis = idleMillis;
     }
 
     public ArrayList<ServerConfig> getServers() {

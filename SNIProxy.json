@@ -1,7 +1,6 @@
 {
     "headBufferSize": 8192,
     "forwarderBufferSize": 8192,
-    "idleMillis": 10000,
     "servers": [
         {
             "proxyType": "http",
