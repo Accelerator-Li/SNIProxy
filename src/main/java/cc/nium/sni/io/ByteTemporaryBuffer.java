@@ -3,41 +3,56 @@ package cc.nium.sni.io;
 import cc.nium.sni.annotation.NotNull;
 import cc.nium.sni.annotation.Nullable;
 
-import java.io.*;
+import java.io.Closeable;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.SocketException;
+import java.net.SocketTimeoutException;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 
+@SuppressWarnings({"WeakerAccess"})
 public final class ByteTemporaryBuffer implements Closeable {
 
     @NotNull
     private final byte[] buffer;
+    @NotNull
+    private final SocketChecker socketChecker;
     @Nullable
-    private InputStream upInputStream;
+    private InputStream inputStream;
     private int count = 0;
     private int readIndex = 0;
 
-    public ByteTemporaryBuffer(@NotNull final InputStream upInputStream, final int capacity) {
-        this.upInputStream = upInputStream;
+    public ByteTemporaryBuffer(@NotNull final InputStream inputStream, @NotNull final SocketChecker socketChecker, final int capacity) {
+        this.inputStream = inputStream;
+        this.socketChecker = socketChecker;
         this.buffer = new byte[capacity];
     }
 
-    public ByteTemporaryBuffer(@NotNull final InputStream upInputStream) {
-        this(upInputStream, 8192);
+    public ByteTemporaryBuffer(@NotNull final InputStream inputStream, @NotNull final SocketChecker socketChecker) {
+        this(inputStream, socketChecker, 8192);
     }
 
-    private synchronized void ensureContent(final int need) throws IOException {
-        if (upInputStream == null)
-            throw new IOException("buffer is closed");
-        final int totalNeedLength = readIndex + need;
+    private synchronized void ensureContent(final int needLength) throws IOException {
+        if (inputStream == null)
+            throw new IOException("Buffer is closed");
+        final int totalNeedLength = readIndex + needLength;
         if (totalNeedLength > buffer.length)
-            throw new IOException("buffer is fulled");
+            throw new IOException("Buffer is fulled");
         while (count < totalNeedLength) {
-            final int available = upInputStream.available();
-            if (available < 0)
-                throw new EOFException();
-            final int readCount = Math.max(buffer.length - count, available);
-            final int len = upInputStream.read(buffer, count, readCount);
-            count += len;
+            try {
+                final int len = inputStream.read(buffer, count, buffer.length - count);
+                if (len < 0) {
+                    if (socketChecker.check())
+                        throw new SocketException("Socket Error");
+                } else {
+                    count += len;
+                }
+            } catch (SocketTimeoutException e) {
+                if (socketChecker.check())
+                    throw new SocketException("Socket Error");
+            }
         }
     }
 
@@ -91,6 +106,6 @@ public final class ByteTemporaryBuffer implements Closeable {
 
     @Override
     public synchronized void close() {
-        upInputStream = null;
+        inputStream = null;
     }
 }

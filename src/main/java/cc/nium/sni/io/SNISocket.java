@@ -20,9 +20,31 @@ public final class SNISocket implements Closeable {
         Closed
     }
 
+    private enum Item {
+        Arrive,
+        Parse,
+        Local,
+        Upper,
+        Close,
+        ;
+
+        @NotNull
+        @Override
+        public String toString() {
+            return name().toLowerCase();
+        }
+    }
+
     private enum ForwarderState {
         Running,
-        Idle
+        Idle,
+        ;
+
+        @NotNull
+        @Override
+        public String toString() {
+            return name().toLowerCase();
+        }
     }
 
     private enum Direction {
@@ -52,7 +74,7 @@ public final class SNISocket implements Closeable {
 
     private final SNIServerSocket server;
     private final Config config;
-    private final String name;
+    private final String id;
     private final int dstPort;
     private final Proxy proxy;
     private final Socket localSocket;
@@ -61,8 +83,8 @@ public final class SNISocket implements Closeable {
     private final Initializer initializer;
     private final Uploader uploader;
     private final Downloader downloader;
-    private String serverName;
-    private String link = "";
+    private String sniName;
+    private String linkName;
     private Socket upperSocket;
     private InputStream upperInputStream;
     private OutputStream upperOutputStream;
@@ -73,7 +95,7 @@ public final class SNISocket implements Closeable {
     SNISocket(SNIServerSocket server, Config config, int dstPort, @NotNull final Proxy proxy, @NotNull final Socket localSocket) throws IOException {
         this.server = server;
         this.config = config;
-        this.name = "@" + padding(Integer.toHexString(this.hashCode()));
+        this.id = "@" + padding(Integer.toHexString(this.hashCode()));
         this.dstPort = dstPort;
         this.proxy = proxy;
         this.localSocket = localSocket;
@@ -83,13 +105,21 @@ public final class SNISocket implements Closeable {
         localSocket.setKeepAlive(false);
         localSocket.setTcpNoDelay(true);
         localSocket.setSoLinger(true, 0);
+        linkName = localSocket.getInetAddress().getHostAddress() + ":" + localSocket.getPort() + " -> " + localSocket.getLocalPort();
         initializer = new Initializer();
         uploader = new Uploader();
         downloader = new Downloader();
+        server.add(this);
+        log(Item.Arrive);
     }
 
     private static String padding(String s) {
         return "00000000".substring(0, 8 - s.length()) + s;
+    }
+
+    @SuppressWarnings("unused")
+    public String getSniName() {
+        return sniName;
     }
 
     @Override
@@ -98,8 +128,7 @@ public final class SNISocket implements Closeable {
             return;
         state = State.Closed;
         server.remove(this);
-        if (serverName != null)
-            System.out.println("connections count = " + server.getConnectionNum() + " " + name + " " + link + " close");
+        log(Item.Close);
         try {
             localSocket.close();
         } catch (IOException e) {
@@ -111,12 +140,6 @@ public final class SNISocket implements Closeable {
         } catch (IOException e) {
             e.printStackTrace();
         }
-    }
-
-    private void close(@NotNull final IOException e) {
-        if (!(e instanceof SocketException) && !(e instanceof SocketTimeoutException))
-            e.printStackTrace();
-        close();
     }
 
     @NotNull
@@ -172,22 +195,24 @@ public final class SNISocket implements Closeable {
         return null;
     }
 
-    private void localError(@NotNull final IOException e, @Nullable final Direction direction) {
-        if (state == State.Normal)
-            state = State.Error;
-        if (localSocket.isClosed())
+    private synchronized void error(@NotNull final Item item, @NotNull final IOException e, @Nullable final Direction direction) {
+        if (state == State.Closed)
             return;
-        System.out.println("connections count = " + server.getConnectionNum() + " " + name + " " + link + " local " + Direction.toString(direction) + " " + e.getClass().getName() + ": " + e.getMessage());
-        close(e);
-    }
-
-    private void upperError(@NotNull final IOException e, @Nullable final Direction direction) {
-        if (state == State.Normal)
-            state = State.Error;
+        state = State.Error;
         if (upperSocket.isClosed())
             return;
-        System.out.println("connections count = " + server.getConnectionNum() + " " + name + " " + link + " upper " + Direction.toString(direction) + " " + e.getClass().getName() + ": " + e.getMessage());
-        close(e);
+        System.out.format("connections count = %d %s %s %s %s %s: %s\n", server.getConnectionNum(), id, linkName, item, Direction.toString(direction), e.getClass().getName(), e.getMessage());
+        if (!(e instanceof SocketException) && !(e instanceof SocketTimeoutException))
+            e.printStackTrace();
+        close();
+    }
+
+    private void log(@NotNull final Item item) {
+        System.out.format("connections count = %d %s %s %s\n", server.getConnectionNum(), id, linkName, item);
+    }
+
+    private void log(@NotNull final Item item, @NotNull final Direction direction, @NotNull final ForwarderState forwarderState) {
+        System.out.format("connections count = %d %s %s %s %s %s\n", server.getConnectionNum(), id, linkName, item, Direction.toString(direction), forwarderState);
     }
 
     private boolean checkLocal() {
@@ -195,7 +220,7 @@ public final class SNISocket implements Closeable {
             localSocket.sendUrgentData(0);
             return false;
         } catch (IOException e) {
-            localError(e, null);
+            error(Item.Local, e, null);
             return true;
         }
     }
@@ -205,7 +230,7 @@ public final class SNISocket implements Closeable {
             upperSocket.sendUrgentData(0);
             return false;
         } catch (IOException e) {
-            upperError(e, null);
+            error(Item.Upper, e, null);
             return true;
         }
     }
@@ -218,47 +243,45 @@ public final class SNISocket implements Closeable {
                 return;
             state = State.Initializing;
             try {
-                try (final ByteTemporaryBuffer byteBuffer = new ByteTemporaryBuffer(localInputStream, config.getHeadBufferSize() + 5)) {// 5 bytes for (protocol, version, length) bytes
+                final int headMaxLength = config.getHeadBufferSize();
+                try (final ByteTemporaryBuffer byteBuffer = new ByteTemporaryBuffer(localInputStream, SNISocket.this::checkLocal, headMaxLength + 5)) {// 5 bytes for (protocol, version, length) bytes
                     final int protocol = byteBuffer.read8Bit();
                     if (protocol != 0x16)
                         throw new IOException("Unknown Protocol: " + Integer.toHexString(protocol));
                     @SuppressWarnings("unused") final int subVersion = byteBuffer.read8Bit();
                     @SuppressWarnings("unused") final int mainVersion = byteBuffer.read8Bit();
                     final int length = byteBuffer.read16Bit();
-                    if (length > 8192) {
+                    if (length > headMaxLength) {
                         throw new IOException("Client Hello Too Long: " + length);
                     }
-                    final String serverName = SNISocket.this.serverName = parseClientHello(byteBuffer, length);
-                    if (serverName == null) {
-                        throw new IOException("Unknown serverName");
+                    final String sniName = SNISocket.this.sniName = parseClientHello(byteBuffer, length);
+                    if (sniName == null) {
+                        throw new IOException("Unknown sniName");
                     }
-                    link = localSocket.getLocalPort() + " -> " + serverName + ":" + dstPort;
+                    linkName += " -> " + sniName + ":" + dstPort;
                     upperSocket = new Socket(proxy);
                     upperSocket.setSoTimeout(config.getIdleMillis());
                     upperSocket.setKeepAlive(false);
                     upperSocket.setTcpNoDelay(true);
                     upperSocket.setSoLinger(true, 0);
-                    InetSocketAddress dest = InetSocketAddress.createUnresolved(serverName, dstPort);
+                    InetSocketAddress dest = InetSocketAddress.createUnresolved(sniName, dstPort);
                     upperSocket.connect(dest);
                     upperInputStream = upperSocket.getInputStream();
                     upperOutputStream = upperSocket.getOutputStream();
                     byteBuffer.transferBufferToAndClose(upperOutputStream);
                 }
                 state = State.Normal;
-                server.add(SNISocket.this);
-                System.out.println("connections count = " + server.getConnectionNum() + " " + name + " " + link);
+                log(Item.Parse);
                 // server.runForwarder(uploader);
                 server.runForwarder(downloader);
                 uploader.run();
             } catch (IOException e) {
-                if (!(e instanceof SocketException) && !(e instanceof SocketTimeoutException))
-                    e.printStackTrace();
-                close();
+                error(Item.Parse, e, null);
             }
         }
     }
 
-    class Uploader implements Forwarder {
+    public class Uploader implements Forwarder {
         private final byte[] buffer = new byte[config.getForwarderBufferSize()];
 
         @Override
@@ -273,13 +296,13 @@ public final class SNISocket implements Closeable {
                             return;
                     } else {
                         if (stateUpload == ForwarderState.Idle)
-                            System.out.println("connections count = " + server.getConnectionNum() + " " + name + " " + link + " local " + Direction.Up + " continue");
+                            log(Item.Local, Direction.Up, ForwarderState.Running);
                         stateUpload = ForwarderState.Running;
                         try {
                             upperOutputStream.write(buffer, 0, len);
                             upperOutputStream.flush();
                         } catch (IOException e) {
-                            upperError(e, Direction.Up);
+                            error(Item.Upper, e, Direction.Up);
                             return;
                         }
                     }
@@ -287,10 +310,10 @@ public final class SNISocket implements Closeable {
                     if (checkLocal())
                         return;
                     if (stateUpload == ForwarderState.Running)
-                        System.out.println("connections count = " + server.getConnectionNum() + " " + name + " " + link + " local " + Direction.Up + " idle");
+                        log(Item.Local, Direction.Up, ForwarderState.Idle);
                     stateUpload = ForwarderState.Idle;
                 } catch (IOException e) {
-                    localError(e, Direction.Up);
+                    error(Item.Local, e, Direction.Up);
                     return;
                 }
             }
@@ -313,13 +336,13 @@ public final class SNISocket implements Closeable {
                             return;
                     } else {
                         if (stateDownload == ForwarderState.Idle)
-                            System.out.println("connections count = " + server.getConnectionNum() + " " + name + " " + link + " upper " + Direction.Down + " continue");
+                            log(Item.Upper, Direction.Down, ForwarderState.Running);
                         stateDownload = ForwarderState.Running;
                         try {
                             localOutputStream.write(buffer, 0, len);
                             localOutputStream.flush();
                         } catch (IOException e) {
-                            localError(e, Direction.Down);
+                            error(Item.Local, e, Direction.Down);
                             return;
                         }
                     }
@@ -327,10 +350,10 @@ public final class SNISocket implements Closeable {
                     if (checkUpper())
                         return;
                     if (stateDownload == ForwarderState.Running)
-                        System.out.println("connections count = " + server.getConnectionNum() + " " + name + " " + link + " upper " + Direction.Down + " idle");
+                        log(Item.Upper, Direction.Down, ForwarderState.Idle);
                     stateDownload = ForwarderState.Idle;
                 } catch (IOException e) {
-                    upperError(e, Direction.Down);
+                    error(Item.Upper, e, Direction.Down);
                     return;
                 }
             }
