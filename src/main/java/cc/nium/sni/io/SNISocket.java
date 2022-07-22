@@ -23,6 +23,7 @@ public final class SNISocket implements Closeable {
     private enum Item {
         Arrive,
         Parse,
+        Connect,
         Local,
         Upper,
         Close,
@@ -148,13 +149,15 @@ public final class SNISocket implements Closeable {
         return initializer;
     }
 
-    private static String parseClientHello(final ByteTemporaryBuffer byteBuffer, final int tlsPackageLength) throws IOException {
-        final int handshakeProtocol = byteBuffer.read8Bit();
-        if (handshakeProtocol != 0x01)
-            throw new IOException("Is not Client Hello Handshake Protocol: " + handshakeProtocol);
-        final int length = byteBuffer.read24Bit();
-        if (tlsPackageLength != length + 4)
-            throw new IOException("clientHelloBytes length not eq");
+    @NotNull
+    private static String parseClientHello(final ByteTemporaryBuffer byteBuffer, final int handshakeLength) throws IOException {
+        final int handshakeType = byteBuffer.read8Bit();
+        if (handshakeType != 0x01)
+            throw new SNIException(String.format("Handshake (type = 0x%02x) is not ClientHello, expect 0x01", handshakeType));
+        final int clientHelloLength = byteBuffer.read24Bit();
+        if (handshakeLength != clientHelloLength + 4)
+            throw new SNIException(String.format("Handshake length (%d) not match ClientHello length (%d) + 4", handshakeLength, clientHelloLength));
+        final int clientHelloStartIndex = byteBuffer.getReadIndex();
         @SuppressWarnings("unused") final int version = byteBuffer.read16Bit();
         // skip random bytes
         byteBuffer.skipLength(32);
@@ -171,29 +174,44 @@ public final class SNISocket implements Closeable {
         // skip compression methods
         byteBuffer.skipLength(compressionMethodsLength);
 
-        final int extLength = byteBuffer.read16Bit();
-        final int extStartIndex = byteBuffer.getReadIndex();
-        if (extLength > 0) {
-            while (byteBuffer.getReadIndex() - extStartIndex < extLength) {
-                final int type = byteBuffer.read16Bit();
-                @SuppressWarnings("unused") final int len = byteBuffer.read16Bit();
-                if (type == 0) {// server name
+        final int extensionsLength = byteBuffer.read16Bit();
+        if (byteBuffer.getReadIndex() - clientHelloStartIndex + extensionsLength > clientHelloLength) {
+            throw new SNIException("Extensions out of bounds");
+        }
+        final int extensionsStartIndex = byteBuffer.getReadIndex();
+        if (extensionsLength > 0) {
+            while (byteBuffer.getReadIndex() - extensionsStartIndex < extensionsLength) {
+                final int extensionType = byteBuffer.read16Bit();
+                final int extensionLength = byteBuffer.read16Bit();
+                if (byteBuffer.getReadIndex() - extensionsStartIndex + extensionLength > extensionsLength) {
+                    throw new SNIException("Extension out of bounds");
+                }
+                if (extensionType == 0) {// ServerName Extension
                     final int serverNameListLength = byteBuffer.read16Bit();
+                    if (extensionLength != serverNameListLength + 2) {
+                        throw new SNIException(String.format("Extension length (%d) not match ServerNameList length (%d) + 2", extensionLength, serverNameListLength));
+                    }
                     final int serverNameStartIndex = byteBuffer.getReadIndex();
                     while (byteBuffer.getReadIndex() - serverNameStartIndex < serverNameListLength) {
-                        final int serverNameListType = byteBuffer.read8Bit();
+                        final int serverNameType = byteBuffer.read8Bit();
                         final int serverNameLength = byteBuffer.read16Bit();
-                        if (serverNameListType == 0 && serverNameLength > 0) {
+                        if (byteBuffer.getReadIndex() - serverNameStartIndex + serverNameLength > serverNameListLength) {
+                            throw new SNIException("ServerName out of bounds");
+                        }
+                        if (serverNameType == 0 && serverNameLength > 0) {
                             return byteBuffer.readString(serverNameLength);
                         } else {
-                            // skip serverName
+                            // skip other type ServerName
                             byteBuffer.skipLength(serverNameLength);
                         }
                     }
+                } else {
+                    // skip other type Extension
+                    byteBuffer.skipLength(extensionLength);
                 }
             }
         }
-        return null;
+        throw new SNIException("ServerName not found in ClientHello");
     }
 
     private synchronized void error(@NotNull final Item item, @NotNull final IOException e, @Nullable final Direction direction) {
@@ -201,7 +219,7 @@ public final class SNISocket implements Closeable {
             return;
         state = State.Error;
         System.out.format("connections count = %d %s %s %s %s %s: %s\n", server.getConnectionNum(), id, linkName, item, Direction.toString(direction), e.getClass().getName(), e.getMessage());
-        if (!(e instanceof SocketException) && !(e instanceof SocketTimeoutException))
+        if (!(e instanceof SocketException || e instanceof SocketTimeoutException || e instanceof SNIException))
             e.printStackTrace();
         close();
     }
@@ -241,42 +259,44 @@ public final class SNISocket implements Closeable {
             if (state != State.UnInitialized)
                 return;
             state = State.Initializing;
-            try {
-                final int headMaxLength = config.getHeadBufferSize();
-                try (final ByteTemporaryBuffer byteBuffer = new ByteTemporaryBuffer(localInputStream, SNISocket.this::checkLocal, headMaxLength + 5)) {// 5 bytes for (protocol, version, length) bytes
-                    final int protocol = byteBuffer.read8Bit();
-                    if (protocol != 0x16)
-                        throw new IOException("Unknown Protocol: " + Integer.toHexString(protocol));
-                    @SuppressWarnings("unused") final int subVersion = byteBuffer.read8Bit();
-                    @SuppressWarnings("unused") final int mainVersion = byteBuffer.read8Bit();
-                    final int length = byteBuffer.read16Bit();
-                    if (length > headMaxLength) {
-                        throw new IOException("Client Hello Too Long: " + length);
-                    }
-                    final String sniName = SNISocket.this.sniName = parseClientHello(byteBuffer, length);
-                    if (sniName == null) {
-                        throw new IOException("Unknown sniName");
-                    }
-                    linkName += " -> " + sniName + ":" + dstPort;
+            final int headMaxLength = config.getHeadBufferSize();
+            try (final ByteTemporaryBuffer byteBuffer = new ByteTemporaryBuffer(localInputStream, SNISocket.this::checkLocal, headMaxLength + 5)) {// 5 bytes for (protocol, version, length) bytes
+                final int protocol = byteBuffer.read8Bit();
+                if (protocol != 0x16)
+                    throw new SNIException(String.format("First byte is 0x%02x, not a TLS Handshake, ", protocol));
+                @SuppressWarnings("unused") final int subVersion = byteBuffer.read8Bit();
+                @SuppressWarnings("unused") final int mainVersion = byteBuffer.read8Bit();
+                final int handshakeLength = byteBuffer.read16Bit();
+                if (handshakeLength > headMaxLength) {
+                    throw new SNIException(String.format("Handshake too long: %d, buffer max size is %d", handshakeLength, headMaxLength));
+                }
+                final String sniName = SNISocket.this.sniName = parseClientHello(byteBuffer, handshakeLength);
+                linkName += " -> " + sniName + ":" + dstPort;
+                log(Item.Parse);
+                try {
                     upperSocket = new Socket(proxy);
                     upperSocket.setSoTimeout(soTimeout);
                     upperSocket.setKeepAlive(false);
                     upperSocket.setTcpNoDelay(true);
                     upperSocket.setSoLinger(true, 0);
-                    InetSocketAddress dest = InetSocketAddress.createUnresolved(sniName, dstPort);
+                    final InetSocketAddress dest = InetSocketAddress.createUnresolved(sniName, dstPort);
                     upperSocket.connect(dest);
                     upperInputStream = upperSocket.getInputStream();
                     upperOutputStream = upperSocket.getOutputStream();
                     byteBuffer.transferBufferToAndClose(upperOutputStream);
+                    log(Item.Connect);
+                } catch (IOException e) {
+                    error(Item.Connect, e, null);
+                    return;
                 }
-                state = State.Normal;
-                log(Item.Parse);
-                // server.runForwarder(uploader);
-                server.runForwarder(downloader);
-                uploader.run();
             } catch (IOException e) {
                 error(Item.Parse, e, null);
+                return;
             }
+            state = State.Normal;
+            // server.runForwarder(uploader);
+            server.runForwarder(downloader);
+            uploader.run();
         }
     }
 
