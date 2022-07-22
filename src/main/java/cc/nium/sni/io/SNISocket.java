@@ -200,8 +200,6 @@ public final class SNISocket implements Closeable {
         if (state == State.Closed)
             return;
         state = State.Error;
-        if (upperSocket.isClosed())
-            return;
         System.out.format("connections count = %d %s %s %s %s %s: %s\n", server.getConnectionNum(), id, linkName, item, Direction.toString(direction), e.getClass().getName(), e.getMessage());
         if (!(e instanceof SocketException) && !(e instanceof SocketTimeoutException))
             e.printStackTrace();
