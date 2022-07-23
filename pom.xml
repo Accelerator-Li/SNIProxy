@@ -6,7 +6,7 @@
 
     <groupId>cc.nium</groupId>
     <artifactId>sni</artifactId>
-    <version>1.0.1</version>
+    <version>1.0.2</version>
     <name>SNIProxy</name>
     <description>SNI Proxy to SOCKS/HTTP Proxy</description>
 
